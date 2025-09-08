@@ -1,78 +1,42 @@
+@'
 import { readFileSync, writeFileSync } from "fs";
-import hre from "hardhat";
-import { isAddress } from "ethers";
+import dotenv from "dotenv";
+import { JsonRpcProvider, Wallet, Contract } from "ethers";
+import factoryAbi from "../artifacts/contracts/BasketVaultFactory.sol/BasketVaultFactory.json" assert { type: "json" };
 
-const EQT_ADDR = "0x5FbDB2315678afecb367f032d93F642f64180aa3"; // your deployed EQT on localhost
-const storePath = "./addresses.local.json";
+dotenv.config();
 
-function loadStore() {
-  try {
-    return JSON.parse(readFileSync(storePath, "utf8"));
-  } catch {
-    return {};
-  }
+const provider = new JsonRpcProvider(process.env.RPC_URL_BASE_SEPOLIA, 84532);
+const wallet = new Wallet(process.env.PRIVATE_KEY, provider);
+
+const store = JSON.parse(readFileSync("./addresses.local.json", "utf8"));
+const FACTORY = store.FACTORY;
+const EQT = store.EQT;
+
+const factory = new Contract(FACTORY, factoryAbi.abi, wallet);
+
+async function create(name, symbol) {
+  console.log(`Creating ${name} (${symbol}) ...`);
+  const tx = await factory.createBasket(EQT, name, symbol, wallet.address);
+  const rcpt = await tx.wait();
+
+  // Find BasketCreated event (ethers v6 log parsing)
+  const evt = rcpt.logs.find(l => l.fragment?.name === "BasketCreated");
+  const basket = evt?.args?.basket ?? evt?.args?.[0];
+  console.log("  ->", basket);
+  return basket;
 }
 
-function saveStore(s) {
-  writeFileSync(storePath, JSON.stringify(s, null, 2));
-}
-
-async function main() {
-  if (!isAddress(EQT_ADDR)) throw new Error("Set a valid EQT address");
-
-  const store = loadStore();
-  const FACTORY = store.FACTORY;
-  if (!isAddress(FACTORY)) throw new Error("Factory not found in addresses.local.json. Deploy it first.");
-
-  const [deployer] = await hre.ethers.getSigners();
-  console.log("Deployer:", deployer.address);
-  console.log("Factory:", FACTORY);
-  console.log("Using EQT:", EQT_ADDR);
-
-  const factory = await hre.ethers.getContractAt("BasketVaultFactory", FACTORY);
-
-  // Define the baskets you want
-  const defs = [
-    { name: "EquiTrack AI Basket",          symbol: "eAI"  },
-    { name: "EquiTrack Aerospace Basket",    symbol: "eAERO"},
-    { name: "EquiTrack Health Basket",       symbol: "eHEALTH"},
-    { name: "EquiTrack Construction Basket", symbol: "eBUILD"},
-    { name: "EquiTrack Energy Basket",       symbol: "eNRG"},
-    { name: "EquiTrack Entertainment Basket",symbol: "eENT"},
-  ];
-
+(async () => {
   store.BASKETS = store.BASKETS || {};
+  store.BASKETS.eAI     = await create("EquiTrack AI Basket", "eAI");
+  store.BASKETS.eAERO   = await create("EquiTrack Aerospace Basket", "eAERO");
+  store.BASKETS.eHEALTH = await create("EquiTrack Health Basket", "eHEALTH");
+  store.BASKETS.eBUILD  = await create("EquiTrack Construction Basket", "eBUILD");
+  store.BASKETS.eNRG    = await create("EquiTrack Energy Basket", "eNRG");
+  store.BASKETS.eENT    = await create("EquiTrack Entertainment Basket", "eENT");
 
-  for (const def of defs) {
-    console.log(`\nCreating basket: ${def.name} (${def.symbol})...`);
-    const tx = await factory.createBasket(EQT_ADDR, def.name, def.symbol, deployer.address);
-    const rc = await tx.wait();
-    const ev = rc.logs
-      .map(l => {
-        try { return factory.interface.parseLog(l); } catch { return null; }
-      })
-      .find(x => x && x.name === "BasketCreated");
-
-    let basketAddr;
-    if (ev) {
-      basketAddr = ev.args.basket;
-      console.log("Basket created from event:", basketAddr);
-    } else {
-      // Fallback: read the last created basket via the view function
-      const count = await factory.basketsCount();
-      basketAddr = await factory.baskets(count - 1n);
-      console.log("Basket created (fallback):", basketAddr);
-    }
-
-    store.BASKETS[def.symbol] = basketAddr;
-  }
-
-  saveStore(store);
-  console.log("\nSaved to", storePath);
-  console.log(store.BASKETS);
-}
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+  writeFileSync("./addresses.local.json", JSON.stringify(store, null, 2));
+  console.log("Saved to ./addresses.local.json");
+})();
+'@ | Set-Content -Encoding utf8 scripts\create_baskets.mjs
